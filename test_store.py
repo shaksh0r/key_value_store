@@ -1,4 +1,4 @@
-from store import Store
+from key_value_store.store import Store
 
 def test_set():
     test_store = Store()
