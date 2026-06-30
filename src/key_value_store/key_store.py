@@ -5,33 +5,35 @@ from key_value_store.store import Store
 from .tasks import return_statement,scheduled_set
 from datetime import datetime,time, timedelta
 import threading
+from queue import PriorityQueue
+import itertools
 
+cond = threading.Condition()
+counter = itertools.count()
 
-
-
-def background_worker(task_list:list[tuple[datetime,str,str,str]],store:Store,stop_event):
-    while not stop_event.is_set():
-        for task in task_list[:]:
-            current_time = datetime.now()
-            task_time = task[0]
-            time_diff = (task_time - current_time).total_seconds()
-
-            if time_diff <= 1:
-                operation = task[1]
-                key = task[2]
-                value = task[3]
+def background_worker(task_list:PriorityQueue,store:Store,stop_event): 
+    while True:    
+        while not task_list.empty():
+            top_task = task_list.queue[0]
+            top_task_schedule:datetime = top_task[0]
+            time_diff = (top_task_schedule-datetime.now()).total_seconds()
+            if time_diff < 1:
+                urgent_task = task_list.get()
+                operation = urgent_task[2][0]
+                key = urgent_task[2][1]
+                value = urgent_task[2][2]
                 if operation == 'set':
                     store.set(key,value)
                 elif operation == 'delete':
                     store.delete(key)
+            else:
+                with cond:
+                    cond.wait(timeout=time_diff)
 
-                try:
-                    task_list.remove(task)
-                except ValueError as e:
-                    raise
-                    
-        
-        stop_event.wait(1)
+        if task_list.empty():
+            with cond:
+                cond.wait()
+
 
 
 
@@ -43,7 +45,7 @@ class Shell(cmd.Cmd):
     def __init__(self):
         super().__init__()
         self.shell_store = Store()
-        self.task_list = []
+        self.task_list = PriorityQueue()
         self.stop_event = threading.Event()
         self.thread = threading.Thread(target=background_worker,args=(self.task_list,self.shell_store,self.stop_event))
         self.thread.start()
@@ -93,12 +95,11 @@ class Shell(cmd.Cmd):
             print("Can't Schedule for that delay")
         else:
             operation_time = datetime.now() + timedelta(seconds=delay)
-            scheduled_tuple = (operation_time,"set",key,value)
-            self.task_list.append(scheduled_tuple)
-
+            scheduled_tuple = ("set",key,value)
+            self.task_list.put((operation_time,next(counter),scheduled_tuple))
+            with cond:
+                cond.notify()
             print("Done")
-
-        #TODO: need to implement Internal Scheduler Thread
 
     def do_scheduled_delete(self,arg):
         self.parsed_arg = self.parse(arg)
@@ -109,8 +110,10 @@ class Shell(cmd.Cmd):
             print("Can't Schedule for that delay")
         else:
             operation_time = datetime.now() + timedelta(seconds = delay)
-            scheduled_tuple = (operation_time,"delete",key,"")
-            self.task_list.append(scheduled_tuple)
+            scheduled_tuple = ("delete",key,"")
+            self.task_list.put((operation_time,next(counter),scheduled_tuple))
+            with cond:
+                cond.notify()
 
         print("Done")
 
