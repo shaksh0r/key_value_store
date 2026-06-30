@@ -8,31 +8,32 @@ import threading
 from queue import PriorityQueue
 import itertools
 
-
-task_list_lock = threading.Lock()
+cond = threading.Condition()
 counter = itertools.count()
 
-def background_worker(task_list:PriorityQueue,store:Store,stop_event):
-    while not stop_event.is_set():
-        #TODO: Need to implement this using threading.Condition() but, first need to test threading.Condition() to see how it works
-        top_task = task_list.queue[0]
-        top_task_schedule:datetime = top_task[0]
-        time_diff = (datetime.now() - top_task_schedule).total_seconds()
-        while time_diff < 1:
-            urgent_task = task_list.get()
-            operation = urgent_task[2][0]
-            key = urgent_task[2][1]
-            value = urgent_task[2][2]
-            if operation == 'set':
-                store.set(key,value)
-            elif operation == 'delete':
-                store.delete(key)
-            
+def background_worker(task_list:PriorityQueue,store:Store,stop_event): 
+    while True:    
+        while not task_list.empty():
             top_task = task_list.queue[0]
             top_task_schedule:datetime = top_task[0]
-            time_diff = (datetime.now() - top_task_schedule).total_seconds()
-                
-        stop_event.wait(time_diff)
+            time_diff = (top_task_schedule-datetime.now()).total_seconds()
+            if time_diff < 1:
+                urgent_task = task_list.get()
+                operation = urgent_task[2][0]
+                key = urgent_task[2][1]
+                value = urgent_task[2][2]
+                if operation == 'set':
+                    store.set(key,value)
+                elif operation == 'delete':
+                    store.delete(key)
+            else:
+                with cond:
+                    cond.wait(timeout=time_diff)
+
+        if task_list.empty():
+            with cond:
+                cond.wait()
+
 
 
 
@@ -96,7 +97,8 @@ class Shell(cmd.Cmd):
             operation_time = datetime.now() + timedelta(seconds=delay)
             scheduled_tuple = ("set",key,value)
             self.task_list.put((operation_time,next(counter),scheduled_tuple))
-
+            with cond:
+                cond.notify()
             print("Done")
 
     def do_scheduled_delete(self,arg):
@@ -110,6 +112,8 @@ class Shell(cmd.Cmd):
             operation_time = datetime.now() + timedelta(seconds = delay)
             scheduled_tuple = ("delete",key,"")
             self.task_list.put((operation_time,next(counter),scheduled_tuple))
+            with cond:
+                cond.notify()
 
         print("Done")
 
